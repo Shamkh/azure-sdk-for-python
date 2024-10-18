@@ -3,11 +3,12 @@
 # ---------------------------------------------------------
 import inspect
 import logging
+import math
 import os
 from concurrent.futures import Future
 from typing import Any, Callable, Dict, Optional, Union
+from collections import OrderedDict
 
-import numpy as np
 import pandas as pd
 from promptflow.client import PFClient
 from promptflow.entities import Run
@@ -36,7 +37,7 @@ class ProxyClient:  # pylint: disable=client-accepts-api-version-keyword
         **kwargs
     ) -> ProxyRun:
         flow_to_run = flow
-        if hasattr(flow, "_to_async"):
+        if os.getenv("AI_EVALS_BATCH_USE_ASYNC", "true").lower() == "true" and hasattr(flow, "_to_async"):
             flow_to_run = flow._to_async()  # pylint: disable=protected-access
 
         batch_use_async = self._should_batch_use_async(flow_to_run)
@@ -53,16 +54,30 @@ class ProxyClient:  # pylint: disable=client-accepts-api-version-keyword
     def get_details(self, proxy_run: ProxyRun, all_results: bool = False) -> pd.DataFrame:
         run: Run = proxy_run.run.result()
         result_df = self._pf_client.get_details(run, all_results=all_results)
-        result_df.replace("(Failed)", np.nan, inplace=True)
+        result_df.replace("(Failed)", math.nan, inplace=True)
         return result_df
 
     def get_metrics(self, proxy_run: ProxyRun) -> Dict[str, Any]:
         run: Run = proxy_run.run.result()
         return self._pf_client.get_metrics(run)
 
+    def get_run_summary(self, proxy_run: ProxyRun) -> Dict[str, Any]:
+        run = proxy_run.run.result()
+
+        # pylint: disable=protected-access
+        return OrderedDict(
+            [
+                ("status", run.status),
+                ("duration", str(run._end_time - run._created_on)),
+                ("completed_lines", run._properties.get("system_metrics", {}).get("__pf__.lines.completed", "NA")),
+                ("failed_lines", run._properties.get("system_metrics", {}).get("__pf__.lines.failed", "NA")),
+                ("log_path", str(run._output_path)),
+            ]
+        )
+
     @staticmethod
     def _should_batch_use_async(flow):
-        if os.getenv("PF_EVALS_BATCH_USE_ASYNC", "true").lower() == "true":
+        if os.getenv("AI_EVALS_BATCH_USE_ASYNC", "true").lower() == "true":
             if hasattr(flow, "__call__") and inspect.iscoroutinefunction(flow.__call__):
                 return True
             if inspect.iscoroutinefunction(flow):
